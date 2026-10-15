@@ -62,9 +62,18 @@ def font_glyph(ch):
 sub = base.copy()
 if SUB:
     use_font = '--font' in sys.argv or any(ch not in SPANS for ch in SUB if ch != ' ')
-    glyphs = [None if ch == ' ' else (font_glyph(ch) if use_font else own_glyph(ch)) for ch in SUB]
     pairs = sum(1 for i in range(len(SUB) - 1) if SUB[i] != ' ' and SUB[i + 1] != ' ')
-    width = sum(SPACE if g is None else g.shape[1] for g in glyphs) + GAP * pairs
+    MAXW = 900                                      # no wider than OBSIDIAN, clear of the O and the tower
+    while True:
+        glyphs = [None if ch == ' ' else (font_glyph(ch) if use_font else own_glyph(ch)) for ch in SUB]
+        letters = sum(SPACE if g is None else g.shape[1] for g in glyphs)
+        GAP = min(GAP, max(15, (MAXW - letters) // max(pairs, 1)))    # tighten the tracking first
+        SPACE = min(SPACE, int(GAP * 2.6))                            # words stay clearly apart
+        width = sum(SPACE if g is None else g.shape[1] for g in glyphs) + GAP * pairs
+        if width <= MAXW or not use_font or CAP <= 22:
+            break
+        CAP -= 2                                                       # then shrink the letters
+    assert width <= MAXW or not use_font, f'subtitle too wide: {width}px'
     sub = clean.copy()
     x = int(CENTRE - width / 2)
     for i, g in enumerate(glyphs):
