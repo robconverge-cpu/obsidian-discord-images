@@ -60,33 +60,61 @@ tower_glow = blur((tower * 255).astype(np.uint8), 20) / 255
 yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
 
 random.seed(7)
-stars = [(random.randint(80, 2090), random.randint(30, 300), random.random()) for _ in range(14)]
-stars = [s for s in stars if not (560 < s[0] < 1520 and 240 < s[1] < 470)]
+N, OUT_W, OUT_H = 44, 1080, 360
+# Rising sparks: each travels a whole number of screen-heights per loop, so the loop is seamless.
+sparks = [dict(x=random.uniform(40, 2130), y=random.uniform(0, H), laps=random.choice([1, 1, 2]),
+               drift=random.uniform(-25, 25), r=random.uniform(2.2, 4.5), a=random.uniform(0.45, 1.0),
+               c=random.choice([(190, 170, 255), (150, 190, 255), (230, 215, 255)])) for _ in range(75)]
+# The O's inner ring as a tilted ellipse (measured from the bright-blue mask).
+CX, CY, RA, RB = 360.0, 357.0, 62.0, 108.0
+ux, uy = 0.30, -0.95; n = math.hypot(ux, uy); ux, uy = ux / n, uy / n      # major axis direction
+vx, vy = -uy, ux
+def spot(f, px, py, sigma, colour, amount):
+    r = int(sigma * 3)
+    x0, x1, y0_, y1_ = int(px) - r, int(px) + r + 1, int(py) - r, int(py) + r + 1
+    if x1 <= 0 or y1_ <= 0 or x0 >= W or y0_ >= H: return
+    x0c, y0c, x1c, y1c = max(x0, 0), max(y0_, 0), min(x1, W), min(y1_, H)
+    d = np.exp(-(((xx[y0c:y1c, x0c:x1c] - px) ** 2 + (yy[y0c:y1c, x0c:x1c] - py) ** 2) / (2 * sigma ** 2)))
+    f[y0c:y1c, x0c:x1c] += (d * amount)[:, :, None] * np.array(colour)
+water = np.zeros((H, W), np.float32); wb = sub[600:H].mean(axis=2)
+water[600:H] = np.clip((wb - 40) / 120, 0, 1)
 
-N, OUT_W, OUT_H = 36, 1200, 400
 frames = []
 for i in range(N):
     t = i / N
     f = sub.copy()
     pulse = 0.5 - 0.5 * math.cos(2 * math.pi * t)
-    f += ring_glow[:, :, None] * np.array([70, 110, 255]) * (0.25 + 0.75 * pulse)
-    f += tower_glow[:, :, None] * np.array([120, 70, 255]) * (0.15 + 0.35 * pulse)
-    # a diagonal shine passes over OBSIDIAN in the first 60% of the loop
-    p = t / 0.6
-    if p <= 1:
-        cx = 520 + p * 1150
-        band = np.exp(-((xx + (yy - 316) * 0.35 - cx) / 55) ** 2)
-        f += (title * band)[:, :, None] * np.array([90, 80, 120])
-    for sx, sy, ph in stars:
-        a = max(0.0, math.sin(2 * math.pi * (t + ph))) ** 3
-        if a < 0.02: continue
-        r = 9
-        d = np.exp(-(((xx[sy - r:sy + r + 1, sx - r:sx + r + 1] - sx) ** 2 + (yy[sy - r:sy + r + 1, sx - r:sx + r + 1] - sy) ** 2) / 6))
-        f[sy - r:sy + r + 1, sx - r:sx + r + 1] += (d * a)[:, :, None] * np.array([200, 190, 255])
+    f += ring_glow[:, :, None] * np.array([90, 140, 255]) * (0.2 + 1.3 * pulse)
+    f += tower_glow[:, :, None] * np.array([150, 90, 255]) * (0.15 + 0.9 * (0.5 - 0.5 * math.cos(2 * math.pi * (t + 0.5))))
+    # energy running round the O's ring, with a fading tail
+    for k in range(14):
+        th = 2 * math.pi * (t * 2) - k * 0.09
+        px = CX + RB * math.cos(th) * ux + RA * math.sin(th) * vx
+        py = CY + RB * math.cos(th) * uy + RA * math.sin(th) * vy
+        spot(f, px, py, 9 - k * 0.4, (200, 230, 255), 1.6 * (1 - k / 14))
+    # bright shine over OBSIDIAN, then over the subtitle
+    for t0, t1, top, bottom, strength in ((0.05, 0.5, 262, 370, 1.0), (0.3, 0.75, 400, 452, 0.8)):
+        p = (t - t0) / (t1 - t0)
+        if 0 <= p <= 1:
+            cx = 520 + p * 1150
+            band = np.exp(-((xx + (yy - (top + bottom) / 2) * 0.35 - cx) / 45) ** 2)
+            mask = title if top < 380 else np.clip((sub.mean(axis=2) - clean.mean(axis=2)) / 60, 0, 1) * ((yy >= top) & (yy < bottom))
+            # the letters are already white, so the shine is a violet bloom around them plus a lift on the glyphs
+            f += (blur(mask * 255, 10) / 255 * band)[:, :, None] * np.array([170, 120, 255]) * 2.2 * strength
+            f += (mask * band)[:, :, None] * np.array([120, 120, 60]) * strength
+    # water shimmer
+    ripple = 0.5 + 0.5 * np.sin(xx[600:H] / 23 + yy[600:H] / 5 - 2 * math.pi * t * 2)
+    f[600:H] += (water[600:H] * ripple)[:, :, None] * np.array([60, 40, 120])
+    # rising sparks
+    for s in sparks:
+        y = (s['y'] - t * s['laps'] * H) % H
+        x = s['x'] + s['drift'] * math.sin(2 * math.pi * (t + s['y'] / H))
+        fade = min(1.0, y / 120) * min(1.0, (H - y) / 120)
+        spot(f, x, y, s['r'], s['c'], s['a'] * fade)
     img = Image.fromarray(np.clip(f, 0, 255).astype(np.uint8)).resize((OUT_W, OUT_H), Image.LANCZOS)
     frames.append(img)
 
 frames[0].save(OUT.replace('.gif', '-still.png'))
 pal = [fr.quantize(colors=255, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.FLOYDSTEINBERG) for fr in frames]
-pal[0].save(OUT, save_all=True, append_images=pal[1:], duration=70, loop=0, optimize=True, disposal=1)
+pal[0].save(OUT, save_all=True, append_images=pal[1:], duration=60, loop=0, optimize=True, disposal=1)
 print('frames', N, 'size', OUT_W, OUT_H)
